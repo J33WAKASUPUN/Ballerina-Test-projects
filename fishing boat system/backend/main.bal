@@ -1,17 +1,12 @@
 import ballerina/http;
 import ballerina/io;
 import ballerina/log;
+import ballerina/os;
 import ballerina/uuid;
 import ballerinax/mongodb;
-import ballerina/os;  // Add this import
 
 // Get connection string from environment variable
 configurable string connectionString = os:getEnv("MONGODB_CONNECTION_STRING");
-
-// Initialize the MongoDB client
-final mongodb:Client mongoDb = check new ({
-    connection: connectionString
-});
 
 // Define CORS configuration
 @http:ServiceConfig {
@@ -28,8 +23,76 @@ service / on new http:Listener(9091) {
     private final mongodb:Database FisherMateDb;
 
     function init() returns error? {
-        self.FisherMateDb = check mongoDb->getDatabase("FisherMateDB");
-        io:println("MongoDB connected to FisherMateDB");
+        // First ensure the connection string is available
+        if connectionString == "" {
+            return error("MongoDB connection string is not set. Please set the MONGODB_CONNECTION_STRING environment variable.");
+        }
+
+        // Log connection string (masked for security)
+        string maskedConnectionString = "";
+        int? atIndex = connectionString.indexOf("@");
+        int? protocolIndex = connectionString.indexOf("://");
+
+        if atIndex is int && protocolIndex is int {
+            maskedConnectionString = connectionString.substring(0, protocolIndex + 3) + "***:***" + connectionString.substring(atIndex);
+        } else {
+            maskedConnectionString = "mongodb+srv://***:***@***";
+        }
+
+        io:println("Attempting to connect to MongoDB with connection string: " + maskedConnectionString);
+
+        // Initialize MongoDB client with better error handling
+        mongodb:Client mongoDb;
+        do {
+            mongoDb = check new ({
+                connection: connectionString
+            });
+            io:println("MongoDB client initialized successfully");
+        } on fail error e {
+            log:printError("Failed to initialize MongoDB client", 'error = e);
+            return e;
+        }
+
+        // Initialize database connection with better error handling
+        do {
+            self.FisherMateDb = check mongoDb->getDatabase("FisherMateDB");
+            io:println("Successfully connected to MongoDB FisherMateDB");
+        } on fail error e {
+            io:println("Failed to connect to MongoDB database: " + e.message());
+            return e;
+        }
+    }
+
+    // Add options handler for signup endpoint
+    resource function options signup(http:Caller caller, http:Request req) returns error? {
+        http:Response res = new;
+        res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
+        res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        check caller->respond(res);
+    }
+
+    // Add signup endpoint to match the frontend code
+    resource function post signup(@http:Payload UserInput input) returns record {|string id;|}|error {
+        mongodb:Collection users = check self.FisherMateDb->getCollection("fisherman");
+        
+        // Log the signup attempt
+        io:println(string `Signup attempt for email: ${input.email}`);
+        
+        User? existingUser = check users->findOne({email: input.email});
+
+        if (existingUser is User) {
+            io:println(string `Email ${input.email} is already in use.`);
+            return error("Email is already in use.");
+        }
+
+        // If email doesn't exist, proceed to create the user
+        string id = uuid:createType1AsString();
+        User user = {id, ...input};
+        check users->insertOne(user);
+        
+        io:println(string `User created successfully with ID: ${id}`);
+        return {id: id};
     }
 
     resource function options events(http:Caller caller, http:Request req) returns error? {
@@ -40,27 +103,9 @@ service / on new http:Listener(9091) {
         check caller->respond(res);
     }
 
-    function init() returns error? {
-        // Log connection string (masked for security)
-        string maskedConnectionString = "";
-        int? atIndex = connectionString.indexOf("@");
-        int? protocolIndex = connectionString.indexOf("://");
+    resource function post register(@http:Payload UserInput input) returns record {|string id;|}|error {
+        mongodb:Collection users = check self.FisherMateDb->getCollection("fisherman");
         
-        if atIndex is int && protocolIndex is int {
-            maskedConnectionString = connectionString.substring(0, protocolIndex + 3) + "***:" + connectionString.substring(atIndex);
-        } else {
-            maskedConnectionString = "mongodb://***";
-        }
-        
-        io:println("Attempting to connect to MongoDB with connection string: " + maskedConnectionString);
-        
-        // Initialize database connection
-        self.FisherMateDb = check mongoDb->getDatabase("FisherMateDB");
-        
-        // Log connection status
-        log:printInfo("MongoDB client initialized successfully");
-        io:println("MongoDB connected to FisherMateDB");
-    }
         User? existingUser = check users->findOne({email: input.email});
 
         if (existingUser is User) {
@@ -87,7 +132,8 @@ service / on new http:Listener(9091) {
         stream<Boat, error?> result = check boats->find();
         Boat[] boatList = [];
         int count = 0;
-        check result.forEach(function(Boat|error boat) {
+        
+        check result.forEach(function (Boat|error boat) {
             if (boat is Boat) {
                 boatList.push(boat);
                 count += 1;
@@ -95,7 +141,8 @@ service / on new http:Listener(9091) {
                 log:printError(string `Error processing boat: ${boat.message()}`, 'error = boat);
             }
         });
-        log:printInfo(string `Successfully retrieved ${count} events`);
+        
+        log:printInfo(string `Successfully retrieved ${count} boats`);
         return boatList;
     }
 
@@ -103,6 +150,7 @@ service / on new http:Listener(9091) {
         mongodb:Collection boats = check self.FisherMateDb->getCollection("boats");
         // Create a map<json> to hold the fields to update.
         map<json> updateFields = {};
+        
         if update.name is string {
             updateFields["name"] = update.name;
         }
@@ -115,9 +163,18 @@ service / on new http:Listener(9091) {
 
         mongodb:UpdateResult updateResult = check boats->updateOne({id}, {set: updateFields});
         if updateResult.modifiedCount != 1 {
-            return error(string `Failed to update the event with id ${id}`);
+            return error(string `Failed to update the boat with id ${id}`);
         }
         return getBoat(self.FisherMateDb, id);
+    }
+
+    // Add options handler for login endpoint
+    resource function options login(http:Caller caller, http:Request req) returns error? {
+        http:Response res = new;
+        res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
+        res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        check caller->respond(res);
     }
 
     // Handle user login
@@ -132,7 +189,7 @@ service / on new http:Listener(9091) {
         }
     }
 
-    // Add this function to your Ballerina service
+    // Get all users
     resource function get user() returns User[]|error {
         mongodb:Collection users = check self.FisherMateDb->getCollection("fisherman");
 
@@ -140,7 +197,7 @@ service / on new http:Listener(9091) {
         User[] userList = [];
 
         int count = 0;
-        check result.forEach(function(User|error user) {
+        check result.forEach(function (User|error user) {
             if (user is User) {
                 userList.push(user);
                 count += 1;
@@ -157,6 +214,7 @@ service / on new http:Listener(9091) {
         mongodb:Collection users = check self.FisherMateDb->getCollection("fisherman");
         // Create a map<json> to hold the fields to update.
         map<json> updateFields = {};
+        
         if update.firstName is string {
             updateFields["firstName"] = update.firstName;
         }
@@ -225,7 +283,8 @@ service / on new http:Listener(9091) {
         stream<Gear, error?> result = check gears->find();
         Gear[] gearList = [];
         int count = 0;
-        check result.forEach(function(Gear|error gear) {
+        
+        check result.forEach(function (Gear|error gear) {
             if (gear is Gear) {
                 gearList.push(gear);
                 count += 1;
@@ -233,6 +292,7 @@ service / on new http:Listener(9091) {
                 log:printError(string `Error processing gear: ${gear.message()}`, 'error = gear);
             }
         });
+        
         log:printInfo(string `Successfully retrieved ${count} gear items`);
         return gearList;
     }
@@ -242,6 +302,7 @@ service / on new http:Listener(9091) {
         mongodb:Collection gears = check self.FisherMateDb->getCollection("gear");
         // Create a map<json> to hold the fields to update.
         map<json> updateFields = {};
+        
         if update.name is string {
             updateFields["name"] = update.name;
         }
@@ -278,7 +339,8 @@ service / on new http:Listener(9091) {
         stream<Fish, error?> result = check fishCollection->find();
         Fish[] fishList = [];
         int count = 0;
-        check result.forEach(function(Fish|error fish) {
+        
+        check result.forEach(function (Fish|error fish) {
             if (fish is Fish) {
                 fishList.push(fish);
                 count += 1;
@@ -286,6 +348,7 @@ service / on new http:Listener(9091) {
                 log:printError(string `Error processing fish: ${fish.message()}`, 'error = fish);
             }
         });
+        
         log:printInfo(string `Successfully retrieved ${count} fish items`);
         return fishList;
     }
@@ -295,6 +358,7 @@ service / on new http:Listener(9091) {
         mongodb:Collection fishCollection = check self.FisherMateDb->getCollection("fish");
         // Create a map<json> to hold the fields to update.
         map<json> updateFields = {};
+        
         if update.category is string {
             updateFields["category"] = update.category;
         }
@@ -329,7 +393,7 @@ service / on new http:Listener(9091) {
         return getUser(self.FisherMateDb, id);
     }
 
-    // Add this to your existing service
+    // Update user password
     resource function put user/password(@http:Payload PasswordUpdate payload) returns json|error {
         mongodb:Collection users = check self.FisherMateDb->getCollection("fisherman");
 
@@ -342,22 +406,22 @@ service / on new http:Listener(9091) {
 
         // Update password
         mongodb:UpdateResult updateResult = check users->updateOne(
-        {id: user.id},
-        {set: {password: payload.newPassword}}
+            {id: user.id},
+            {set: {password: payload.newPassword}}
         );
 
         return {message: "Password updated successfully"};
     }
-
 }
 
+// Helper function to get boat by id
 isolated function getBoat(mongodb:Database FisherMateDb, string id) returns Boat|error {
     mongodb:Collection boats = check FisherMateDb->getCollection("boats");
     stream<Boat, error?> findResult = check boats->find({id});
     Boat[] result = check from Boat e in findResult
         select e;
     if result.length() != 1 {
-        return error(string `Failed to find an boat with id ${id}`);
+        return error(string `Failed to find a boat with id ${id}`);
     }
     return result[0];
 }
@@ -386,7 +450,7 @@ isolated function getFish(mongodb:Database db, string id) returns Fish|error {
     return result[0];
 }
 
-// Add helper function to your Ballerina service
+// Helper function to get user by id
 isolated function getUser(mongodb:Database FisherMateDb, string id) returns User|error {
     mongodb:Collection users = check FisherMateDb->getCollection("fisherman");
     stream<User, error?> findResult = check users->find({id});

@@ -1,4 +1,3 @@
-import React from 'react';
 import Navibar from '../components/Navbar'; 
 import Foot from '../components/Footer'; 
 import Body from '../components/Homebody'; 

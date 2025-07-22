@@ -1,4 +1,4 @@
-// Add this type definition
+// Type definitions
 public type PasswordUpdate record {|
     string currentPassword;
     string newPassword;
@@ -45,14 +45,12 @@ public type BoatInput record {|
     string name;
     string weight;
     string registrationNumber;
-
 |};
 
 public type BoatUpdate record {|
     string name?;
     string weight?;
     string registrationNumber?;
-
 |};
 
 public type Boat record {|
@@ -77,7 +75,6 @@ public type Gear record {|
 public type Fish record {|
     readonly string id;
     *FishInput;
-
 |};
 
 public type FishUpdate record {|
@@ -94,4 +91,3 @@ public type FishInput record {|
     string price;
     string status;
 |};
-
